@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!-- OBS on Apple Silicon only loads third-party plugins from ~/Library/Application Support/obs-studio/plugins
+     (the /Library search path is x86_64-only legacy), so the pkg installs into the current user's home. -->
+<installer-gui-script minSpecVersion="1.0">
+    <title>BetterFace for OBS @VERSION@</title>
+    <options rootVolumeOnly="true" hostArchitectures="arm64" customize="never" allow-external-scripts="no"/>
+    <domains enable_currentUserHome="true" enable_anywhere="false" enable_localSystem="false"/>
+    <choices-outline>
+        <line choice="betterface"/>
+    </choices-outline>
+    <choice id="betterface" title="BetterFace for OBS" description="">
+        <pkg-ref id="local.betterface.obs"/>
+    </choice>
+    <pkg-ref id="local.betterface.obs" version="@VERSION@">#BetterFace.pkg</pkg-ref>
+    <installation-check script="installCheck();"/>
+    <script>
+        function installCheck() {
+            if (system.compareVersions(system.version.ProductVersion, '13.0') == -1) {
+                my.result.title = 'BetterFace 需要 macOS 13 或更高版本';
+                my.result.message = ' ';
+                my.result.type = 'Fatal';
+                return false;
+            }
+            return true;
+        }
+    </script>
+</installer-gui-script>

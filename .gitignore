@@ -1,0 +1,34 @@
+# Local build and dependency output
+build/
+dist/
+third_party/
+.venv/
+__pycache__/
+*.py[cod]
+*.dSYM/
+
+# Credentials, local agent context, and workstation configuration
+.env
+.env.*
+!.env.example
+.obsws_password
+*.pem
+*.key
+*.p12
+*.pfx
+CLAUDE.md
+AGENTS.md
+*.local.*
+
+# Private test inputs, captured frames, logs, and audit output
+testmedia/
+shots/
+audit/
+private/
+*.log
+*.csv
+*.jsonl
+
+# Finder metadata
+.DS_Store
+._*

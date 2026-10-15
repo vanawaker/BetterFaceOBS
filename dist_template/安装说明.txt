@@ -1,0 +1,52 @@
+BetterFace for OBS @VERSION@
+适用于 Apple 芯片 Mac 的原生 OBS 多人美颜、瘦脸滤镜
+
+【环境要求】
+- Apple 芯片 Mac（M1 及以后），macOS 13 或更高版本。
+- Apple 芯片版 OBS Studio 31 或更高版本；开发验证使用 OBS 32.2.2。
+- 当前不支持 Windows、Linux 和 Intel Mac。
+
+【安装】
+1. 在官方发布页下载安装包和 SHA256SUMS.txt：
+   https://github.com/vanawaker/BetterFaceOBS/releases/tag/v@VERSION@
+   可用以下命令核对安装包的 SHA-256：
+   shasum -a 256 BetterFace-for-OBS-@VERSION@.pkg
+2. 完全退出 OBS，再打开 BetterFace-for-OBS-@VERSION@.pkg，按提示安装。
+   插件仅安装到当前用户目录。
+3. 安装包没有经过 Apple 公证。如被系统拦截，请确认下载来源，
+   再到“系统设置 → 隐私与安全性”选择“仍要打开”。
+4. 打开 OBS，在摄像头源上点右键 →“滤镜”→“+”→“BetterFace for OBS”。
+5. 设置面板底部应显示 BetterFace for OBS @VERSION@。从较低强度开始调整。
+
+插件安装位置：
+~/Library/Application Support/obs-studio/plugins/BetterFace.plugin
+
+【功能与参数】
+- 磨皮（默认 60）：平滑皮肤，避开眼睛、眉毛和嘴；建议从 40–70 开始。
+- 瘦脸（连下巴）（默认 30）：调整脸颊、下颌和下巴；请检查侧脸和附近背景线条。
+- 美白（默认 0）：提亮面部，深色区域的提亮幅度较小。
+- 红润（默认 20）：调整面部红润程度。
+- 淡化黑眼圈和法令纹（默认 50）：作用于眼下和鼻翼至嘴角区域。
+- 脖子和耳朵也磨皮（默认开）：额外处理脖子和耳朵，复杂光线下可能误选区域。
+- 显示美颜范围：查看效果覆盖区域的调试选项，正常使用时请关闭。
+- 最多同时处理 6 张脸，所有人共用参数，尚不支持逐人调整。
+
+【使用限制与故障恢复】
+- 背景保护在此版本中禁用，不能开启；瘦脸可能带动紧贴脸部的背景线条。
+- 识别和效果受脸部大小、角度、遮挡、光线及机器负载影响。
+  识别不到脸时，效果会逐渐淡出；短时遮挡会尽量保留跟踪，手也可能被一起处理。
+- 检测到帧转换、资源创建或渲染故障时，该滤镜实例会停用美颜并输出原画，
+  不会自动重试。修改参数或开关滤镜不会恢复处理，请在直播结束后重建滤镜或重启 OBS。
+- 这不是进程隔离，不能保证拦住所有原生崩溃、驱动故障或系统识别卡死。
+- 直播前使用实际摄像头、灯光和推流负载试播，并确认关闭滤镜后原画正常。
+  使用抠像时，可把 BetterFace 放在抠像滤镜之后，检查运动中的人物边缘和透明度。
+
+【卸载】
+退出 OBS，在访达中按 Command+Shift+G，输入：
+~/Library/Application Support/obs-studio/plugins
+将 BetterFace.plugin 移到废纸篓，再重启 OBS。
+
+【源码与许可证】
+https://github.com/vanawaker/BetterFaceOBS
+采用 GPL-2.0-or-later，不提供担保。Copyright (C) 2026 vanawaker and BetterFace contributors.
+源码和插件资源目录内附 LICENSE 与 THIRD_PARTY_NOTICES.md。

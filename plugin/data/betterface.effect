@@ -1,0 +1,352 @@
+// BetterFace for OBS - render passes
+//
+// Geom      face masks drawn as feathered polygons (vertex colors)
+// BlurH     horizontal Gaussian of the source inside the masks (rgb mean, a = mean luma^2)
+// Smooth    vertical Gaussian + self-guided skin smoothing, dark-circle/fold lift, whitening, rosy
+// Down      2x box downsample (low-frequency image for the lift)
+// Plate     background plate accumulated where segmentation says "not a person"
+// Final     slim warp (displacement grid), background protection, debug overlay
+//
+// Textures are premultiplied (that is how OBS renders sources into a texrender);
+// color math happens on unpremultiplied values.
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform texture2d blur_tex;
+uniform texture2d smooth_tex;
+uniform texture2d mask_a;
+uniform texture2d mask_b;
+uniform texture2d mask_c;
+uniform texture2d lowfreq;
+uniform texture2d warp_tex;
+uniform texture2d seg_tex;
+uniform texture2d plate_tex;
+
+uniform float2 texel;
+uniform float2 src_size;
+uniform float2 warp_scale;
+uniform float2 warp_offset;
+uniform float smooth_amt;
+uniform float whiten_amt;
+uniform float rosy_amt;
+uniform float lift_amt;
+uniform float plate_rate;
+uniform bool use_seg;
+uniform bool use_warp;
+uniform bool use_lift;
+uniform bool protect_bg;
+uniform bool debug_on;
+
+sampler_state textureSampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+struct GeomData {
+	float4 pos   : POSITION;
+	float4 color : COLOR;
+};
+
+VertData VSDefault(VertData v_in)
+{
+	VertData v_out;
+	v_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	v_out.uv = v_in.uv;
+	return v_out;
+}
+
+GeomData VSGeom(GeomData v_in)
+{
+	GeomData v_out;
+	v_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	v_out.color = v_in.color;
+	return v_out;
+}
+
+float4 PSGeom(GeomData v_in) : TARGET
+{
+	return v_in.color;
+}
+
+float luma(float3 c)
+{
+	return dot(c, float3(0.299, 0.587, 0.114));
+}
+
+float2 chroma(float3 c)
+{
+	float y = luma(c);
+	return float2((c.b - y) * 0.564, (c.r - y) * 0.713);
+}
+
+float3 from_ycc(float y, float2 cc)
+{
+	float r = y + 1.402 * cc.y;
+	float b = y + 1.773 * cc.x;
+	float g = (y - 0.299 * r - 0.114 * b) / 0.587;
+	return float3(r, g, b);
+}
+
+float3 unpremul(float4 c)
+{
+	return c.rgb / max(c.a, 0.0001);
+}
+
+float seg_at(float2 uv)
+{
+	return smoothstep(0.25, 0.75, seg_tex.Sample(textureSampler, uv).r);
+}
+
+// Person mask grown outward by ~8 px (max of 9 taps), so the silhouette edge and anything the
+// segmentation trimmed off it counts as person
+float person_at(float2 uv)
+{
+	float2 r = texel * 8.0;
+	float m = seg_tex.Sample(textureSampler, uv).r;
+	m = max(m, seg_tex.Sample(textureSampler, uv + float2(r.x, 0.0)).r);
+	m = max(m, seg_tex.Sample(textureSampler, uv - float2(r.x, 0.0)).r);
+	m = max(m, seg_tex.Sample(textureSampler, uv + float2(0.0, r.y)).r);
+	m = max(m, seg_tex.Sample(textureSampler, uv - float2(0.0, r.y)).r);
+	m = max(m, seg_tex.Sample(textureSampler, uv + r * 0.7).r);
+	m = max(m, seg_tex.Sample(textureSampler, uv - r * 0.7).r);
+	m = max(m, seg_tex.Sample(textureSampler, uv + float2(r.x, -r.y) * 0.7).r);
+	m = max(m, seg_tex.Sample(textureSampler, uv + float2(-r.x, r.y) * 0.7).r);
+	return smoothstep(0.06, 0.35, m);
+}
+
+// 0..1 how much this pixel counts as skin of a tracked face
+float skin_weight(float3 c, float2 uv, float4 ma)
+{
+	float cand = ma.g;
+	if (cand > 0.002) {
+		float4 mb = mask_b.Sample(textureSampler, uv);
+		float2 mc = mb.rg - float2(0.5, 0.5);
+		float sigma = mb.b * 0.25;
+		float d = length(chroma(c) - mc) / max(sigma * 2.5, 0.022);
+		float like = 1.0 - smoothstep(0.75, 1.5, d);
+		float ly = max(mb.a, 0.05);
+		like = like * smoothstep(ly * 0.2, ly * 0.45, luma(c));
+		if (use_seg)
+			like = like * seg_at(uv);
+		cand = cand * like;
+	}
+	return max(ma.r, cand);
+}
+
+float4 PSDraw(VertData v_in) : TARGET
+{
+	return image.Sample(textureSampler, v_in.uv);
+}
+
+float4 PSBlurH(VertData v_in) : TARGET
+{
+	float4 ma = mask_a.Sample(textureSampler, v_in.uv);
+	float4 c0 = image.Sample(textureSampler, v_in.uv);
+	if (ma.r + ma.g + ma.b < 0.002) {
+		float y0 = luma(unpremul(c0));
+		return float4(unpremul(c0), y0 * y0);
+	}
+
+	float stp = max(ma.a * 64.0, 1.0) / 8.0 * texel.x;
+	float3 acc = float3(0.0, 0.0, 0.0);
+	float acc2 = 0.0;
+	float wsum = 0.0;
+	for (int k = -8; k <= 8; k++) {
+		float4 s = image.Sample(textureSampler, v_in.uv + float2(stp * float(k), 0.0));
+		float w = exp(-float(k * k) / 32.0) * s.a;
+		float3 c = unpremul(s);
+		float y = luma(c);
+		acc += c * w;
+		acc2 += y * y * w;
+		wsum += w;
+	}
+	wsum = max(wsum, 0.0001);
+	return float4(acc / wsum, acc2 / wsum);
+}
+
+float4 PSSmooth(VertData v_in) : TARGET
+{
+	float4 src = image.Sample(textureSampler, v_in.uv);
+	float4 ma = mask_a.Sample(textureSampler, v_in.uv);
+	if (ma.r + ma.g + ma.b < 0.002 || src.a < 0.002)
+		return src;
+
+	float3 c = unpremul(src);
+	float stp = max(ma.a * 64.0, 1.0) / 8.0 * texel.y;
+	float4 acc = float4(0.0, 0.0, 0.0, 0.0);
+	float wsum = 0.0;
+	for (int k = -8; k <= 8; k++) {
+		float w = exp(-float(k * k) / 32.0);
+		acc += blur_tex.Sample(textureSampler, v_in.uv + float2(0.0, stp * float(k))) * w;
+		wsum += w;
+	}
+	float3 mean = acc.rgb / wsum;
+	float ym = luma(mean);
+	float var = max(acc.a / wsum - ym * ym, 0.0);
+
+	// Skin test on the local mean: per-pixel chroma carries camera compression blocks.
+	// face: whole face (whitening, rosy); skin: minus eyes, brows and lips (smoothing, lift)
+	float face = skin_weight(mean, v_in.uv, ma);
+	float keep = mask_c.Sample(textureSampler, v_in.uv).r;
+	float skin = min(face, keep);
+	float lift = use_lift ? min(ma.b, keep) * lift_amt : 0.0;
+	if (face < 0.002 && lift < 0.002)
+		return src;
+
+	// Self-guided filter: flat skin goes to the local mean, edges (eyes, lashes, glasses) stay
+	float s = smooth_amt;
+	float eps = 0.0004 + 0.004 * s * s;
+	float amt = skin * (eps / (var + eps)) * (0.95 * s);
+	float eps_l = 0.006;
+	amt = max(amt, lift * 0.85 * (eps_l / (var + eps_l)));
+	float3 res = lerp(c, mean, saturate(amt));
+
+	// Dark circles and nasolabial folds: lift toward the surrounding skin brightness
+	if (lift > 0.002) {
+		float4 lf4 = lowfreq.Sample(textureSampler, v_in.uv);
+		float yt = luma(unpremul(lf4));
+		float y = luma(res);
+		float ynew = y + max(yt * 0.97 - y, 0.0) * lift * 0.9;
+		float2 cc = chroma(res);
+		float2 mc = mask_b.Sample(textureSampler, v_in.uv).rg - float2(0.5, 0.5);
+		res = from_ycc(ynew, lerp(cc, mc, lift * 0.35));
+	}
+
+	// Whitening: screen-like lift over the whole face. Dark pixels (brows, beard, pupils, glasses
+	// frames) get less of it by their own brightness, so they stay dark without any hole in the mask.
+	float yd = luma(res);
+	res = lerp(res, float3(1.0, 1.0, 1.0) - (float3(1.0, 1.0, 1.0) - res) * (float3(1.0, 1.0, 1.0) - res),
+		   face * whiten_amt * 0.6 * smoothstep(0.06, 0.4, yd));
+
+	// Rosy: a little more red/magenta, not on dark hair
+	if (rosy_amt > 0.0) {
+		float2 cc = chroma(res);
+		cc += float2(0.004, 0.03) * (face * rosy_amt * smoothstep(0.1, 0.35, yd));
+		res = from_ycc(luma(res), cc);
+	}
+
+	return float4(saturate(res) * src.a, src.a);
+}
+
+float4 PSDown(VertData v_in) : TARGET
+{
+	float2 h = texel * 0.5;
+	float4 c = image.Sample(textureSampler, v_in.uv + float2(-h.x, -h.y));
+	c += image.Sample(textureSampler, v_in.uv + float2(h.x, -h.y));
+	c += image.Sample(textureSampler, v_in.uv + float2(-h.x, h.y));
+	c += image.Sample(textureSampler, v_in.uv + float2(h.x, h.y));
+	return c * 0.25;
+}
+
+float4 PSPlate(VertData v_in) : TARGET
+{
+	float4 prev = plate_tex.Sample(textureSampler, v_in.uv);
+	float4 cur = image.Sample(textureSampler, v_in.uv);
+	float w = (1.0 - person_at(v_in.uv)) * plate_rate * step(0.99, cur.a);
+	return float4(lerp(prev.rgb, cur.rgb, w), lerp(prev.a, 1.0, w));
+}
+
+float4 PSFinal(VertData v_in) : TARGET
+{
+	float2 p = v_in.uv * src_size;
+	float2 d = float2(0.0, 0.0);
+	if (use_warp)
+		d = warp_tex.Sample(textureSampler, p * warp_scale + warp_offset).rg;
+	float2 uvq = (p + d) * texel;
+	float4 res = smooth_tex.Sample(textureSampler, uvq);
+
+	// Background protection: background stays where it was; the strip the face moved out of
+	// is filled from the background plate (or stretched background when the plate is empty)
+	if (protect_bg && use_warp) {
+		float fillw = smoothstep(0.3, 1.5, length(d));
+		if (fillw > 0.0) {
+			float mq = person_at(uvq);
+			float mp = person_at(v_in.uv);
+			float4 orig = smooth_tex.Sample(textureSampler, v_in.uv);
+			float4 pl = plate_tex.Sample(textureSampler, v_in.uv);
+			// plate rgb accumulates from black, so it is premultiplied by its confidence
+			float4 fill = lerp(res, float4(pl.rgb / max(pl.a, 0.001), 1.0), pl.a);
+			float4 prot = lerp(lerp(orig, fill, mp), res, mq);
+			res = lerp(res, prot, fillw);
+		}
+	}
+
+	// Pink: whitening/rosy area, lighter where smoothing leaves the features alone. Blue: lift.
+	if (debug_on) {
+		float4 ma = mask_a.Sample(textureSampler, uvq);
+		float keep = mask_c.Sample(textureSampler, uvq).r;
+		float fc = skin_weight(blur_tex.Sample(textureSampler, uvq).rgb, uvq, ma);
+		res.rgb = lerp(res.rgb, float3(1.0, 0.0, 0.3) * res.a, fc * (0.2 + 0.35 * keep));
+		res.rgb = lerp(res.rgb, float3(0.0, 0.6, 1.0) * res.a, min(ma.b, keep) * 0.5);
+	}
+	return res;
+}
+
+technique Geom
+{
+	pass
+	{
+		vertex_shader = VSGeom(v_in);
+		pixel_shader  = PSGeom(v_in);
+	}
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSDraw(v_in);
+	}
+}
+
+technique BlurH
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSBlurH(v_in);
+	}
+}
+
+technique Smooth
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSSmooth(v_in);
+	}
+}
+
+technique Down
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSDown(v_in);
+	}
+}
+
+technique Plate
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSPlate(v_in);
+	}
+}
+
+technique Final
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSFinal(v_in);
+	}
+}

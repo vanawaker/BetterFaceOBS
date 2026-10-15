@@ -1,0 +1,47 @@
+BetterFace for OBS @VERSION@
+Multi-face beauty and face slimming for Apple Silicon Macs
+
+Requirements
+- Apple Silicon Mac, macOS 13 or later.
+- Apple Silicon OBS Studio 31 or later; development verification used OBS 32.2.2.
+- Windows, Linux, and Intel Macs are not supported by this release.
+
+Install
+1. Download the installer and SHA256SUMS.txt from the official release page:
+   https://github.com/vanawaker/BetterFaceOBS/releases/tag/v@VERSION@
+   You can check the download with: shasum -a 256 BetterFace-for-OBS-@VERSION@.pkg
+2. Quit OBS completely, then open the installer. The package installs only for the current user.
+3. The installer is not notarized. If macOS blocks it, review the download source and use
+   System Settings > Privacy & Security > Open Anyway if you decide to allow it.
+4. Restart OBS. Open a camera source's Filters and add BetterFace for OBS.
+5. Check the version at the bottom of the filter settings. Start with low effect strengths.
+
+The bundle is installed at:
+~/Library/Application Support/obs-studio/plugins/BetterFace.plugin
+
+Controls
+- Smoothing, face slimming, whitening, rosy tone, and under-eye / nasolabial-fold softening.
+- Optional smoothing of the neck and ears.
+- Up to six faces; all faces share the same settings.
+- The debug overlay visualizes the affected regions; turn it off for normal use.
+
+Limitations and failure recovery
+- Background protection is forced off and cannot be enabled in this release. Face slimming may
+  distort background edges near a face. Per-person adjustments are not implemented.
+- Tracking quality depends on face size, pose, occlusion, lighting, hardware, and processing load.
+- Detected conversion, allocation, or rendering failures disable processing for that filter
+  instance and pass through the original source. Changing settings or toggling the filter will
+  not clear this state. Recreate the filter or restart OBS after the stream.
+- This is not process isolation and cannot contain every native crash, driver fault, or Vision hang.
+- Test the complete filter chain and intended stream configuration before a live show. If using
+  chroma key, try placing BetterFace after the keying filter and inspect edges under motion.
+
+Remove
+Quit OBS. In Finder, use Go > Go to Folder and open:
+~/Library/Application Support/obs-studio/plugins
+Move BetterFace.plugin to the Trash, then restart OBS.
+
+Source and license
+https://github.com/vanawaker/BetterFaceOBS
+GPL-2.0-or-later. Copyright (C) 2026 vanawaker and BetterFace contributors.
+No warranty. LICENSE and THIRD_PARTY_NOTICES.md are included in the source and bundle resources.
